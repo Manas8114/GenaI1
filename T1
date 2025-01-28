@@ -1,0 +1,118 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+from torchvision.utils import save_image
+
+import os
+
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Create a directory for generated images
+os.makedirs("generated_images", exist_ok=True)
+
+# Define transformations
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))  # Normalize images to range [-1, 1]
+])
+
+# Load MNIST dataset
+dataset = torchvision.datasets.MNIST(root="./data", train=True, transform=transform, download=True)
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=True)
+
+# Define the Generator
+class Generator(nn.Module):
+    def __init__(self, latent_dim):
+        super(Generator, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 784),
+            nn.Tanh()  # Output scaled to [-1, 1]
+        )
+
+    def forward(self, z):
+        img = self.model(z)
+        img = img.view(img.size(0), 1, 28, 28)  # Reshape to image dimensions
+        return img
+
+# Define the Discriminator
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(784, 512),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(256, 1),
+            nn.Sigmoid()  # Output a probability
+        )
+
+    def forward(self, img):
+        img_flat = img.view(img.size(0), -1)  # Flatten the image
+        validity = self.model(img_flat)
+        return validity
+
+# Hyperparameters
+latent_dim = 100
+
+# Initialize models
+generator = Generator(latent_dim).to(device)
+discriminator = Discriminator().to(device)
+
+# Loss function
+adversarial_loss = nn.BCELoss()
+
+# Optimizers
+optimizer_G = optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
+optimizer_D = optim.Adam(discriminator.parameters(), lr=0.0002, betas=(0.5, 0.999))
+
+# Training parameters
+num_epochs = 50
+
+# Training loop
+for epoch in range(num_epochs):
+    for i, (imgs, _) in enumerate(dataloader):
+        # Ground truths
+        real = torch.ones(imgs.size(0), 1, device=device)
+        fake = torch.zeros(imgs.size(0), 1, device=device)
+        
+        # Real images
+        real_imgs = imgs.to(device)
+
+        # Train Discriminator
+        optimizer_D.zero_grad()
+        real_loss = adversarial_loss(discriminator(real_imgs), real)
+        
+        # Generate fake images
+        z = torch.randn(imgs.size(0), latent_dim, device=device)
+        fake_imgs = generator(z)
+        fake_loss = adversarial_loss(discriminator(fake_imgs.detach()), fake)
+        
+        d_loss = real_loss + fake_loss
+        d_loss.backward()
+        optimizer_D.step()
+
+        # Train Generator
+        optimizer_G.zero_grad()
+        g_loss = adversarial_loss(discriminator(fake_imgs), real)
+        g_loss.backward()
+        optimizer_G.step()
+
+        # Print progress
+        if i % 200 == 0:
+            print(f"Epoch [{epoch}/{num_epochs}] Batch {i}/{len(dataloader)} \
+                  Loss D: {d_loss.item():.4f}, Loss G: {g_loss.item():.4f}")
+
+    # Save generated images at the end of each epoch
+    save_image(fake_imgs[:25], f"generated_images/{epoch}.png", nrow=5, normalize=True)
